@@ -1,0 +1,78 @@
+{
+    "name": "YouTube Downloader Service",
+    "description": "Professional YouTube downloader with advanced bot detection avoidance",
+    "repository": "https://github.com/yourusername/youtube-downloader-service",
+    "logo": "https://cdn-icons-png.flaticon.com/512/1384/1384060.png",
+    "keywords": [
+      "youtube",
+      "downloader",
+      "video",
+      "audio",
+      "automation",
+      "n8n",
+      "api"
+    ],
+    "success_url": "/health",
+    "stack": "heroku-22",
+    "buildpacks": [
+      {
+        "url": "heroku/nodejs"
+      },
+      {
+        "url": "heroku/python"
+      },
+      {
+        "url": "https://github.com/jontewks/puppeteer-heroku-buildpack.git"
+      }
+    ],
+    "formation": {
+      "web": {
+        "quantity": 1,
+        "size": "basic"
+      }
+    },
+    "addons": [
+      {
+        "plan": "papertrail:choklad",
+        "as": "PAPERTRAIL"
+      }
+    ],
+    "env": {
+      "NODE_ENV": {
+        "description": "Node environment",
+        "value": "production"
+      },
+      "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD": {
+        "description": "Skip Puppeteer Chromium download",
+        "value": "true"
+      },
+      "PUPPETEER_EXECUTABLE_PATH": {
+        "description": "Puppeteer executable path",
+        "value": "/usr/bin/google-chrome-stable"
+      },
+      "MAX_CONCURRENT_DOWNLOADS": {
+        "description": "Maximum concurrent downloads",
+        "value": "2"
+      },
+      "REQUEST_DELAY": {
+        "description": "Delay between requests in milliseconds",
+        "value": "8000"
+      },
+      "SESSION_DELAY": {
+        "description": "Delay between sessions in milliseconds", 
+        "value": "30000"
+      },
+      "FILE_RETENTION_HOURS": {
+        "description": "Hours to retain downloaded files",
+        "value": "12"
+      },
+      "PROXY_LIST": {
+        "description": "Comma-separated list of residential proxies (REQUIRED for production)",
+        "value": "",
+        "required": false
+      }
+    },
+    "scripts": {
+      "postdeploy": "echo 'YouTube Downloader Service deployed successfully!'"
+    }
+  }

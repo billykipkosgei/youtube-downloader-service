@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: youtube-downloader-service
+    env: node
+    plan: starter
+    buildCommand: npm install && pip3 install --upgrade yt-dlp
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "true"
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: /usr/bin/chromium-browser
+      - key: MAX_CONCURRENT_DOWNLOADS
+        value: "2"
+      - key: REQUEST_DELAY
+        value: "8000"
+      - key: SESSION_DELAY
+        value: "30000"
+      - key: FILE_RETENTION_HOURS
+        value: "12"
+      - key: PROXY_LIST
+        sync: false
+        # Set this in Render dashboard with your residential proxy list
+    
+    # System packages for yt-dlp and browser
+    buildFilter:
+      paths:
+        - package.json
+        - server.js
+        - scripts/**
+    
+    # Disk storage for temporary files
+    disk:
+      name: downloads
+      mountPath: /app/downloads
+      sizeGB: 1
+
+    # Auto-deploy on push to main branch
+    autoDeploy: true
+    
+    # Custom headers for security
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
