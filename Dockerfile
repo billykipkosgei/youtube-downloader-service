@@ -21,10 +21,10 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp in a virtual environment
+# Install yt-dlp and youtube-dl in a virtual environment
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install --upgrade yt-dlp
+    && /opt/venv/bin/pip install --upgrade yt-dlp youtube-dl
 
 # Add virtual environment to PATH
 ENV PATH="/opt/venv/bin:$PATH"

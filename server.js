@@ -191,6 +191,42 @@ function execYtDlp(args) {
     });
 }
 
+// Generic command execution function
+function execCommand(command, args) {
+    return new Promise((resolve, reject) => {
+        console.log(`🔧 Executing ${command} with ${args.length} arguments`);
+        
+        const childProcess = spawn(command, args, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 300000 // 5 minute timeout
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        childProcess.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+
+        childProcess.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        childProcess.on('close', (code) => {
+            if (code === 0) {
+                resolve(stdout);
+            } else {
+                const errorMessage = stderr + stdout;
+                reject(new Error(`${command} failed with code ${code}: ${errorMessage.slice(0, 200)}`));
+            }
+        });
+
+        childProcess.on('error', (error) => {
+            reject(new Error(`Failed to start ${command}: ${error.message}`));
+        });
+    });
+}
+
 // Execute ffmpeg with proper process spawning
 function execFfmpeg(args) {
     return new Promise((resolve, reject) => {
@@ -346,7 +382,35 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
                         console.log(`✅ Video downloaded (simple): ${videoFile}`);
                     }
                 } catch (simpleError) {
-                    console.error('❌ All video strategies failed:', simpleError.message);
+                    console.error('❌ All yt-dlp strategies failed:', simpleError.message);
+                    
+                    // Last resort: Try youtube-dl as a fallback
+                    try {
+                        console.log('🔄 Trying youtube-dl fallback...');
+                        const ytdlArgs = [
+                            '-f', 'best[height<=720]/best',
+                            '--no-check-certificate',
+                            '--no-warnings',
+                            '--user-agent', userAgent
+                        ];
+                        
+                        if (proxy) {
+                            ytdlArgs.push('--proxy', proxy);
+                        }
+                        
+                        ytdlArgs.push('-o', outputTemplate, url);
+                        
+                        await execCommand('youtube-dl', ytdlArgs);
+                        
+                        const videoFiles = await fs.readdir(CONFIG.downloadDir);
+                        const videoFile = videoFiles.find(f => f.startsWith(`${jobId}_`));
+                        if (videoFile) {
+                            results.video = `/files/${videoFile}`;
+                            console.log(`✅ Video downloaded (youtube-dl): ${videoFile}`);
+                        }
+                    } catch (ytdlError) {
+                        console.error('❌ All video strategies failed:', ytdlError.message);
+                    }
                 }
             }
         }
@@ -404,6 +468,40 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
                 }
             } catch (ffmpegError) {
                 console.error('❌ Audio extraction via ffmpeg failed:', ffmpegError.message);
+                
+                // Try youtube-dl as a last resort for audio
+                try {
+                    console.log('🔄 Trying youtube-dl for audio extraction...');
+                    const ytdlAudioArgs = [
+                        '-f', 'bestaudio',
+                        '--extract-audio',
+                        '--audio-format', 'mp3',
+                        '--audio-quality', '128k',
+                        '--no-check-certificate',
+                        '--no-warnings',
+                        '--user-agent', userAgent
+                    ];
+                    
+                    if (proxy) {
+                        ytdlAudioArgs.push('--proxy', proxy);
+                    }
+                    
+                    ytdlAudioArgs.push('-o', outputTemplate, url);
+                    
+                    await execCommand('youtube-dl', ytdlAudioArgs);
+                    
+                    const audioFiles = await fs.readdir(CONFIG.downloadDir);
+                    const audioFile = audioFiles.find(f => 
+                        f.startsWith(`${jobId}_`) && 
+                        (f.includes('.mp3') || f.includes('.m4a') || f.includes('.ogg'))
+                    );
+                    if (audioFile) {
+                        results.audio = `/files/${audioFile}`;
+                        console.log(`✅ Audio extracted (youtube-dl): ${audioFile}`);
+                    }
+                } catch (ytdlAudioError) {
+                    console.error('❌ All audio extraction methods failed:', ytdlAudioError.message);
+                }
             }
         }
         
