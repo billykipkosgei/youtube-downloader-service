@@ -9,16 +9,25 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 
+// Trust Railway proxy for rate limiting
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Rate limiting
+// Rate limiting with Railway compatibility
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100, // Limit each IP to 100 requests per windowMs
-    message: { error: 'Too many requests, please try again later' }
+    message: { error: 'Too many requests, please try again later' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Handle Railway's proxy headers properly
+    keyGenerator: (req) => {
+        return req.ip || req.connection.remoteAddress || 'unknown';
+    }
 });
 app.use('/api/', limiter);
 
@@ -40,15 +49,13 @@ const CONFIG = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ],
     
     languages: [
         'en-US,en;q=0.9',
-        'en-US,en;q=0.9,es;q=0.8',
         'en-GB,en;q=0.9',
-        'en-US,en;q=0.9,fr;q=0.8'
+        'en-US,en;q=0.9,es;q=0.8'
     ]
 };
 
@@ -127,7 +134,7 @@ function validateYouTubeUrl(url) {
     return patterns.some(pattern => pattern.test(url));
 }
 
-// Enhanced yt-dlp download with fixed command building
+// Enhanced yt-dlp download with better error handling and updated arguments
 async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     const userAgent = getRandomUserAgent();
     const proxy = getRandomProxy();
@@ -137,45 +144,77 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     
     const results = {};
     
+    // Base arguments for all downloads - updated for better compatibility
+    const getBaseArgs = () => {
+        const baseArgs = [
+            '--no-warnings',
+            '--no-cache-dir',
+            '--user-agent', userAgent,
+            '--referer', 'https://www.youtube.com/',
+            '--add-header', `Accept-Language:${getRandomLanguage()}`,
+            '--sleep-interval', '3',
+            '--max-sleep-interval', '8',
+            '--retries', '5', // Increased retries
+            '--fragment-retries', '5',
+            '--retry-sleep', 'exp=1:3',
+            '--ignore-errors', // Continue on errors
+            '--no-check-certificate', // Skip SSL checks
+            '-o', outputTemplate
+        ];
+
+        // Add proxy if available
+        if (proxy) {
+            baseArgs.push('--proxy', proxy);
+            console.log(`🌐 Using proxy: ${proxy.split('@')[1] || proxy.split('//')[1]}`);
+        }
+
+        return baseArgs;
+    };
+    
     // Download video format
     if (formats.includes('video')) {
         console.log('📹 Downloading video...');
         try {
-            // Build arguments array properly to avoid shell escaping issues
             const videoArgs = [
-                '--no-warnings',
-                '--no-cache-dir',
-                '--user-agent', userAgent,
-                '--referer', 'https://www.youtube.com/',
-                '--add-header', `Accept-Language:${getRandomLanguage()}`,
-                '--add-header', 'Accept-Encoding:gzip, deflate, br',
-                '--add-header', 'Connection:keep-alive',
-                '--sleep-interval', '5',
-                '--max-sleep-interval', '15',
-                '--retries', '3',
-                '--fragment-retries', '3',
-                '--retry-sleep', 'exp=1:5',
-                '-o', outputTemplate,
-                '-f', 'best[ext=mp4][height<=1080]/best[ext=mp4]/best',
-                '--embed-subs'
+                ...getBaseArgs(),
+                '-f', 'best[height<=1080]/best', // Simplified format selector
+                url
             ];
-
-            if (proxy) {
-                videoArgs.push('--proxy', proxy);
-            }
-
-            videoArgs.push(url);
             
             await execYtDlp(videoArgs);
             
             const videoFiles = await fs.readdir(CONFIG.downloadDir);
-            const videoFile = videoFiles.find(f => f.startsWith(`${jobId}_`) && f.includes('.mp4'));
+            const videoFile = videoFiles.find(f => 
+                f.startsWith(`${jobId}_`) && 
+                (f.includes('.mp4') || f.includes('.webm') || f.includes('.mkv'))
+            );
             if (videoFile) {
                 results.video = `/files/${videoFile}`;
                 console.log(`✅ Video downloaded: ${videoFile}`);
             }
         } catch (error) {
             console.error('❌ Video download failed:', error.message);
+            
+            // Try alternative approach with simpler format
+            try {
+                console.log('🔄 Retrying with alternative format...');
+                const altVideoArgs = [
+                    ...getBaseArgs(),
+                    '-f', 'mp4', // Even simpler
+                    url
+                ];
+                
+                await execYtDlp(altVideoArgs);
+                
+                const videoFiles = await fs.readdir(CONFIG.downloadDir);
+                const videoFile = videoFiles.find(f => f.startsWith(`${jobId}_`) && f.includes('.mp4'));
+                if (videoFile) {
+                    results.video = `/files/${videoFile}`;
+                    console.log(`✅ Video downloaded (retry): ${videoFile}`);
+                }
+            } catch (retryError) {
+                console.error('❌ Video retry also failed:', retryError.message);
+            }
         }
         
         await delay(CONFIG.requestDelay + Math.random() * 5000);
@@ -186,41 +225,61 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
         console.log('🎵 Extracting audio...');
         try {
             const audioArgs = [
-                '--no-warnings',
-                '--no-cache-dir',
-                '--user-agent', userAgent,
-                '--referer', 'https://www.youtube.com/',
-                '--add-header', `Accept-Language:${getRandomLanguage()}`,
-                '--add-header', 'Accept-Encoding:gzip, deflate, br',
-                '--add-header', 'Connection:keep-alive',
-                '--sleep-interval', '5',
-                '--max-sleep-interval', '15',
-                '--retries', '3',
-                '--fragment-retries', '3',
-                '--retry-sleep', 'exp=1:5',
-                '-o', outputTemplate,
-                '-f', 'bestaudio[ext=m4a]/bestaudio',
+                ...getBaseArgs(),
+                '-f', 'bestaudio/best',
                 '--extract-audio',
                 '--audio-format', 'mp3',
-                '--audio-quality', '192K'
+                '--audio-quality', '192K',
+                url
             ];
-
-            if (proxy) {
-                audioArgs.push('--proxy', proxy);
-            }
-
-            audioArgs.push(url);
             
             await execYtDlp(audioArgs);
             
             const audioFiles = await fs.readdir(CONFIG.downloadDir);
-            const audioFile = audioFiles.find(f => f.startsWith(`${jobId}_`) && (f.includes('.mp3') || f.includes('.m4a')));
+            const audioFile = audioFiles.find(f => 
+                f.startsWith(`${jobId}_`) && 
+                (f.includes('.mp3') || f.includes('.m4a') || f.includes('.ogg'))
+            );
             if (audioFile) {
                 results.audio = `/files/${audioFile}`;
                 console.log(`✅ Audio extracted: ${audioFile}`);
             }
         } catch (error) {
             console.error('❌ Audio extraction failed:', error.message);
+            
+            // Try downloading video and extracting audio with ffmpeg
+            try {
+                console.log('🔄 Trying audio extraction from video...');
+                const videoOnlyArgs = [
+                    ...getBaseArgs(),
+                    '-f', 'best',
+                    '--output', path.join(CONFIG.downloadDir, `${jobId}_temp_video.%(ext)s`),
+                    url
+                ];
+                
+                await execYtDlp(videoOnlyArgs);
+                
+                // Find the downloaded video
+                const tempFiles = await fs.readdir(CONFIG.downloadDir);
+                const tempVideo = tempFiles.find(f => f.startsWith(`${jobId}_temp_video`));
+                
+                if (tempVideo) {
+                    const audioOutput = path.join(CONFIG.downloadDir, `${jobId}_audio.mp3`);
+                    await execFfmpeg([
+                        '-i', path.join(CONFIG.downloadDir, tempVideo),
+                        '-vn', '-acodec', 'mp3', '-ab', '192k',
+                        audioOutput
+                    ]);
+                    
+                    // Clean up temp video
+                    await fs.unlink(path.join(CONFIG.downloadDir, tempVideo));
+                    
+                    results.audio = `/files/${jobId}_audio.mp3`;
+                    console.log(`✅ Audio extracted via ffmpeg: ${jobId}_audio.mp3`);
+                }
+            } catch (altError) {
+                console.error('❌ Alternative audio extraction failed:', altError.message);
+            }
         }
         
         await delay(CONFIG.requestDelay + Math.random() * 5000);
@@ -235,14 +294,14 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
             
             await execFfmpeg([
                 '-i', originalVideoPath,
-                '-an',
-                '-c:v', 'copy',
+                '-an', // Remove audio
+                '-c:v', 'copy', // Copy video without re-encoding
                 '-avoid_negative_ts', 'make_zero',
                 silentVideoPath
             ]);
             
             results.silent_video = `/files/${jobId}_silent.mp4`;
-            console.log(`✅ Silent video created`);
+            console.log(`✅ Silent video created: ${jobId}_silent.mp4`);
         } catch (error) {
             console.error('❌ Silent video creation failed:', error.message);
         }
@@ -251,14 +310,18 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     return results;
 }
 
-// Execute yt-dlp with proper process spawning
+// Execute yt-dlp with proper process spawning and enhanced error handling
 function execYtDlp(args) {
     return new Promise((resolve, reject) => {
         console.log(`🔧 Executing yt-dlp with ${args.length} arguments`);
         
         const process = spawn('yt-dlp', args, {
             stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: 300000 // 5 minute timeout
+            timeout: 300000, // 5 minute timeout
+            env: {
+                ...process.env,
+                PYTHONUNBUFFERED: '1' // Better output handling
+            }
         });
 
         let stdout = '';
@@ -276,14 +339,23 @@ function execYtDlp(args) {
             if (code === 0) {
                 resolve(stdout);
             } else {
-                // Check for specific YouTube blocking patterns
-                if (stderr.includes('Sign in to confirm') || 
-                    stderr.includes('bot') || 
-                    stderr.includes('429') ||
-                    stderr.includes('403')) {
-                    reject(new Error(`YouTube bot detection triggered: ${stderr}`));
+                // Enhanced error detection
+                const errorMessage = stderr + stdout;
+                
+                if (errorMessage.includes('Sign in to confirm') || 
+                    errorMessage.includes('bot') || 
+                    errorMessage.includes('429') ||
+                    errorMessage.includes('403') ||
+                    errorMessage.includes('captcha')) {
+                    reject(new Error(`YouTube bot detection triggered: ${errorMessage.slice(0, 200)}`));
+                } else if (errorMessage.includes('Video unavailable') ||
+                          errorMessage.includes('Private video') ||
+                          errorMessage.includes('does not exist')) {
+                    reject(new Error(`Video not accessible: ${errorMessage.slice(0, 200)}`));
+                } else if (errorMessage.includes('Failed to extract')) {
+                    reject(new Error(`YouTube extraction failed - this is often temporary. Error: ${errorMessage.slice(0, 200)}`));
                 } else {
-                    reject(new Error(`yt-dlp failed with code ${code}: ${stderr}`));
+                    reject(new Error(`yt-dlp failed with code ${code}: ${errorMessage.slice(0, 200)}`));
                 }
             }
         });
@@ -299,7 +371,7 @@ function execFfmpeg(args) {
     return new Promise((resolve, reject) => {
         console.log(`🔧 Executing ffmpeg with ${args.length} arguments`);
         
-        const process = spawn('ffmpeg', args, {
+        const process = spawn('ffmpeg', ['-y', ...args], { // -y to overwrite files
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: 180000 // 3 minute timeout
         });
@@ -319,7 +391,7 @@ function execFfmpeg(args) {
             if (code === 0) {
                 resolve(stdout);
             } else {
-                reject(new Error(`ffmpeg failed with code ${code}: ${stderr}`));
+                reject(new Error(`ffmpeg failed with code ${code}: ${stderr.slice(0, 200)}`));
             }
         });
 
@@ -329,7 +401,7 @@ function execFfmpeg(args) {
     });
 }
 
-// Process download job (simplified without browser automation for Railway)
+// Process download job with better error handling
 async function processDownloadJob(jobId) {
     const job = jobs.get(jobId);
     if (!job) return;
@@ -361,11 +433,11 @@ async function processDownloadJob(jobId) {
 
         job.progress = 50;
 
-        // Download files using yt-dlp directly (skip browser for Railway compatibility)
+        // Download files
         const downloadResults = await downloadWithYtDlp(job.url, jobId, job.formats, sessionId);
         
         if (Object.keys(downloadResults).length === 0) {
-            throw new Error('No files downloaded - possible bot detection or video unavailable');
+            throw new Error('No files downloaded - video may be unavailable, private, or temporarily blocked');
         }
         
         job.files = downloadResults;
@@ -382,12 +454,22 @@ async function processDownloadJob(jobId) {
         job.status = 'failed';
         job.error = error.message;
         
+        // Enhanced error categorization
         if (error.message.includes('bot detection') || 
             error.message.includes('Sign in to confirm') ||
             error.message.includes('429') ||
-            error.message.includes('403')) {
+            error.message.includes('403') ||
+            error.message.includes('captcha')) {
             job.errorType = 'bot_detection';
             console.error(`🚫 Bot detection for job ${jobId.slice(0, 8)}...: ${error.message}`);
+        } else if (error.message.includes('Video not accessible') ||
+                  error.message.includes('unavailable') ||
+                  error.message.includes('Private video')) {
+            job.errorType = 'video_unavailable';
+            console.error(`📹 Video unavailable for job ${jobId.slice(0, 8)}...: ${error.message}`);
+        } else if (error.message.includes('extraction failed')) {
+            job.errorType = 'extraction_error';
+            console.error(`🔧 Extraction error for job ${jobId.slice(0, 8)}...: ${error.message}`);
         } else {
             job.errorType = 'general_error';
             console.error(`❌ Job failed ${jobId.slice(0, 8)}...: ${error.message}`);
@@ -452,11 +534,6 @@ app.post('/api/download', async (req, res) => {
                 error: 'Invalid formats',
                 available: ['video', 'audio', 'silent_video']
             });
-        }
-
-        // Production warning
-        if (process.env.NODE_ENV === 'production' && CONFIG.proxies.length === 0) {
-            console.warn('⚠️ WARNING: No residential proxies configured - bot detection risk is HIGH');
         }
 
         // Concurrent limit check
@@ -547,7 +624,11 @@ app.get('/api/status/:jobId', (req, res) => {
         response.error_type = job.errorType;
         
         if (job.errorType === 'bot_detection') {
-            response.suggestion = 'YouTube detected automated access. Residential proxies are recommended for reliable operation.';
+            response.suggestion = 'YouTube detected automated access. This is temporary - try again in a few minutes.';
+        } else if (job.errorType === 'video_unavailable') {
+            response.suggestion = 'Video may be private, deleted, or geo-restricted. Try a different video.';
+        } else if (job.errorType === 'extraction_error') {
+            response.suggestion = 'YouTube extraction failed. This is often temporary - try again in a few minutes.';
         }
     } else if (job.status === 'processing') {
         response.message = 'Download in progress...';
@@ -660,31 +741,22 @@ async function startServer() {
         app.listen(PORT, '0.0.0.0', () => {
             console.log('\n🚀 YouTube Downloader Service Started Successfully!');
             console.log('='.repeat(60));
-            console.log(`📡 Server: http://localhost:${PORT}`);
+            console.log(`📡 Server: Running on port ${PORT}`);
             console.log(`📁 Downloads: ${CONFIG.downloadDir}`);
             console.log(`🔒 Security: Maximum stealth mode ENABLED`);
             console.log(`⚡ Concurrent: ${CONFIG.maxConcurrent} downloads max`);
             console.log(`⏱️ Delays: ${CONFIG.requestDelay}ms request, ${CONFIG.sessionDelay}ms session`);
-            console.log(`🧹 Cleanup: Files deleted after ${CONFIG.fileRetentionHours} hours`);
             
             if (CONFIG.proxies.length > 0) {
                 console.log(`🔄 Proxies: ${CONFIG.proxies.length} residential proxies configured`);
                 console.log(`✅ Bot Protection: MAXIMUM (Production Ready)`);
             } else {
                 console.log(`⚠️ Proxies: NONE configured`);
-                console.log(`🚨 Bot Protection: MINIMAL (Testing Only)`);
-                console.log(`💡 Add PROXY_LIST environment variable for production`);
+                console.log(`🚨 Bot Protection: BASIC (Testing Only)`);
             }
             
             console.log('='.repeat(60));
-            console.log('🎯 API Endpoints:');
-            console.log(`   Health: GET  ${PORT === 80 ? 'http://localhost' : `http://localhost:${PORT}`}/health`);
-            console.log(`   Download: POST ${PORT === 80 ? 'http://localhost' : `http://localhost:${PORT}`}/api/download`);
-            console.log(`   Status: GET  ${PORT === 80 ? 'http://localhost' : `http://localhost:${PORT}`}/api/status/{job_id}`);
-            console.log(`   Files: GET   ${PORT === 80 ? 'http://localhost' : `http://localhost:${PORT}`}/files/{filename}`);
-            console.log('='.repeat(60));
-            console.log('🔗 Ready for N8N integration!');
-            console.log('\n');
+            console.log('🎯 Ready for N8N integration!');
         });
         
     } catch (error) {
@@ -694,25 +766,14 @@ async function startServer() {
 }
 
 // Graceful shutdown
-async function gracefulShutdown(signal) {
-    console.log(`\n${signal} received. Shutting down gracefully...`);
-    console.log('✅ Graceful shutdown complete');
+process.on('SIGTERM', () => {
+    console.log('Received SIGTERM, shutting down gracefully...');
     process.exit(0);
-}
-
-// Handle shutdown signals
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-
-// Handle uncaught errors
-process.on('uncaughtException', (error) => {
-    console.error('💥 Uncaught Exception:', error);
-    process.exit(1);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
-    process.exit(1);
+process.on('SIGINT', () => {
+    console.log('Received SIGINT, shutting down gracefully...');
+    process.exit(0);
 });
 
 // Start the server
