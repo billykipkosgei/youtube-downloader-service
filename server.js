@@ -315,7 +315,8 @@ function execYtDlp(args) {
     return new Promise((resolve, reject) => {
         console.log(`🔧 Executing yt-dlp with ${args.length} arguments`);
         
-        const process = spawn('yt-dlp', args, {
+        // FIXED: Use childProcess instead of process to avoid naming conflict
+        const childProcess = spawn('yt-dlp', args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: 300000, // 5 minute timeout
             env: {
@@ -327,15 +328,15 @@ function execYtDlp(args) {
         let stdout = '';
         let stderr = '';
 
-        process.stdout.on('data', (data) => {
+        childProcess.stdout.on('data', (data) => {
             stdout += data.toString();
         });
 
-        process.stderr.on('data', (data) => {
+        childProcess.stderr.on('data', (data) => {
             stderr += data.toString();
         });
 
-        process.on('close', (code) => {
+        childProcess.on('close', (code) => {
             if (code === 0) {
                 resolve(stdout);
             } else {
@@ -360,7 +361,7 @@ function execYtDlp(args) {
             }
         });
 
-        process.on('error', (error) => {
+        childProcess.on('error', (error) => {
             reject(new Error(`Failed to start yt-dlp: ${error.message}`));
         });
     });
@@ -371,7 +372,8 @@ function execFfmpeg(args) {
     return new Promise((resolve, reject) => {
         console.log(`🔧 Executing ffmpeg with ${args.length} arguments`);
         
-        const process = spawn('ffmpeg', ['-y', ...args], { // -y to overwrite files
+        // FIXED: Use childProcess instead of process to avoid naming conflict
+        const childProcess = spawn('ffmpeg', ['-y', ...args], { // -y to overwrite files
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: 180000 // 3 minute timeout
         });
@@ -379,15 +381,15 @@ function execFfmpeg(args) {
         let stdout = '';
         let stderr = '';
 
-        process.stdout.on('data', (data) => {
+        childProcess.stdout.on('data', (data) => {
             stdout += data.toString();
         });
 
-        process.stderr.on('data', (data) => {
+        childProcess.stderr.on('data', (data) => {
             stderr += data.toString();
         });
 
-        process.on('close', (code) => {
+        childProcess.on('close', (code) => {
             if (code === 0) {
                 resolve(stdout);
             } else {
@@ -395,7 +397,7 @@ function execFfmpeg(args) {
             }
         });
 
-        process.on('error', (error) => {
+        childProcess.on('error', (error) => {
             reject(new Error(`Failed to start ffmpeg: ${error.message}`));
         });
     });
