@@ -134,6 +134,99 @@ function validateYouTubeUrl(url) {
     return patterns.some(pattern => pattern.test(url));
 }
 
+// Execute yt-dlp with proper process spawning and enhanced error handling
+function execYtDlp(args) {
+    return new Promise((resolve, reject) => {
+        console.log(`🔧 Executing yt-dlp with ${args.length} arguments`);
+        
+        // Use childProcess instead of process to avoid naming conflict
+        const childProcess = spawn('yt-dlp', args, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 300000, // 5 minute timeout
+            env: {
+                ...process.env,
+                PYTHONUNBUFFERED: '1' // Better output handling
+            }
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        childProcess.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+
+        childProcess.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        childProcess.on('close', (code) => {
+            if (code === 0) {
+                resolve(stdout);
+            } else {
+                // Enhanced error detection
+                const errorMessage = stderr + stdout;
+                
+                if (errorMessage.includes('Sign in to confirm') || 
+                    errorMessage.includes('bot') || 
+                    errorMessage.includes('429') ||
+                    errorMessage.includes('403') ||
+                    errorMessage.includes('captcha')) {
+                    reject(new Error(`YouTube bot detection triggered: ${errorMessage.slice(0, 200)}`));
+                } else if (errorMessage.includes('Video unavailable') ||
+                          errorMessage.includes('Private video') ||
+                          errorMessage.includes('does not exist')) {
+                    reject(new Error(`Video not accessible: ${errorMessage.slice(0, 200)}`));
+                } else if (errorMessage.includes('Failed to extract')) {
+                    reject(new Error(`YouTube extraction failed - this is often temporary. Error: ${errorMessage.slice(0, 200)}`));
+                } else {
+                    reject(new Error(`yt-dlp failed with code ${code}: ${errorMessage.slice(0, 200)}`));
+                }
+            }
+        });
+
+        childProcess.on('error', (error) => {
+            reject(new Error(`Failed to start yt-dlp: ${error.message}`));
+        });
+    });
+}
+
+// Execute ffmpeg with proper process spawning
+function execFfmpeg(args) {
+    return new Promise((resolve, reject) => {
+        console.log(`🔧 Executing ffmpeg with ${args.length} arguments`);
+        
+        // Use childProcess instead of process to avoid naming conflict
+        const childProcess = spawn('ffmpeg', ['-y', ...args], { // -y to overwrite files
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 180000 // 3 minute timeout
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        childProcess.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+
+        childProcess.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        childProcess.on('close', (code) => {
+            if (code === 0) {
+                resolve(stdout);
+            } else {
+                reject(new Error(`ffmpeg failed with code ${code}: ${stderr.slice(0, 200)}`));
+            }
+        });
+
+        childProcess.on('error', (error) => {
+            reject(new Error(`Failed to start ffmpeg: ${error.message}`));
+        });
+    });
+}
+
 // Enhanced yt-dlp download with better error handling and updated arguments
 async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     const userAgent = getRandomUserAgent();
