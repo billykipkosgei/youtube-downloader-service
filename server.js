@@ -1,16 +1,11 @@
 const express = require('express');
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-
-// Puppeteer with stealth plugin
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-puppeteer.use(StealthPlugin());
 
 const app = express();
 
@@ -46,22 +41,7 @@ const CONFIG = {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebLib/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    ],
-    
-    viewports: [
-        { width: 1920, height: 1080 },
-        { width: 1366, height: 768 },
-        { width: 1440, height: 900 },
-        { width: 1536, height: 864 }
-    ],
-    
-    timezones: [
-        'America/New_York',
-        'America/Los_Angeles',
-        'America/Chicago',
-        'Europe/London',
-        'Europe/Berlin'
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     ],
     
     languages: [
@@ -76,15 +56,12 @@ const CONFIG = {
 const jobs = new Map();
 const activeDownloads = new Set();
 const lastRequestTime = new Map();
-const sessions = new Map();
 
 // Utility functions
 const generateJobId = () => crypto.randomUUID();
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const getRandomElement = (array) => array[Math.floor(Math.random() * array.length)];
 const getRandomUserAgent = () => getRandomElement(CONFIG.userAgents);
-const getRandomViewport = () => getRandomElement(CONFIG.viewports);
-const getRandomTimezone = () => getRandomElement(CONFIG.timezones);
 const getRandomLanguage = () => getRandomElement(CONFIG.languages);
 const getRandomProxy = () => CONFIG.proxies.length > 0 ? getRandomElement(CONFIG.proxies) : null;
 
@@ -150,155 +127,7 @@ function validateYouTubeUrl(url) {
     return patterns.some(pattern => pattern.test(url));
 }
 
-// Create stealth browser session
-async function createStealthBrowser(sessionId) {
-    const proxy = getRandomProxy();
-    const userAgent = getRandomUserAgent();
-    const viewport = getRandomViewport();
-    const timezone = getRandomTimezone();
-    const language = getRandomLanguage();
-    
-    console.log(`🕵️ Creating stealth session: ${sessionId.slice(0, 8)}...`);
-    
-    const browserOptions = {
-        headless: 'new',
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--disable-features=VizDisplayCompositor',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-renderer-backgrounding',
-            '--disable-extensions',
-            '--disable-plugins',
-            '--disable-default-apps',
-            '--mute-audio',
-            '--no-pings',
-            '--disable-logging',
-            `--user-agent=${userAgent}`,
-            `--lang=${language.split(',')[0]}`,
-            '--accept-language=' + language
-        ]
-    };
-
-    if (proxy) {
-        browserOptions.args.push(`--proxy-server=${proxy}`);
-        console.log(`🌐 Using proxy: ${proxy.includes('@') ? proxy.split('@')[1] : proxy}`);
-    }
-
-    const browser = await puppeteer.launch(browserOptions);
-    const page = await browser.newPage();
-    
-    await page.setUserAgent(userAgent);
-    await page.setViewport(viewport);
-    
-    await page.setExtraHTTPHeaders({
-        'Accept-Language': language,
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Cache-Control': 'max-age=0'
-    });
-
-    // Override browser properties for stealth
-    await page.evaluateOnNewDocument((timezone, language) => {
-        Object.defineProperty(navigator, 'language', {
-            get: () => language.split(',')[0]
-        });
-        
-        Object.defineProperty(navigator, 'languages', {
-            get: () => language.split(',').map(l => l.split(';')[0])
-        });
-    }, timezone, language);
-
-    sessions.set(sessionId, { browser, page, userAgent, proxy, createdAt: Date.now() });
-    return { browser, page };
-}
-
-// Extract video info with realistic browser behavior
-async function getVideoInfoWithBrowser(url, sessionId) {
-    try {
-        console.log(`📺 Extracting video info for: ${url.slice(0, 50)}...`);
-        
-        const { browser, page } = await createStealthBrowser(sessionId);
-        
-        // Navigate to YouTube homepage first (realistic behavior)
-        console.log('🌐 Loading YouTube homepage...');
-        await page.goto('https://www.youtube.com', { 
-            waitUntil: 'networkidle0', 
-            timeout: 30000 
-        });
-        
-        // Random delay to simulate human behavior
-        await delay(2000 + Math.random() * 3000);
-        
-        // Handle cookie consent if present
-        try {
-            await page.click('[aria-label*="Accept"], [aria-label*="accept"], button:contains("Accept")', { timeout: 5000 });
-            await delay(1000);
-        } catch (e) {
-            // Cookie banner might not be present
-        }
-        
-        // Navigate to target video
-        console.log('🎯 Loading target video...');
-        await page.goto(url, { 
-            waitUntil: 'networkidle0', 
-            timeout: 30000 
-        });
-        
-        // Wait for video player
-        await page.waitForSelector('#movie_player, #player', { timeout: 20000 });
-        await delay(3000 + Math.random() * 2000);
-        
-        // Extract video information
-        const videoInfo = await page.evaluate(() => {
-            const title = document.querySelector('h1.title yt-formatted-string')?.textContent ||
-                         document.querySelector('meta[property="og:title"]')?.content ||
-                         document.querySelector('title')?.textContent?.replace(' - YouTube', '') ||
-                         'Unknown Title';
-                         
-            const duration = document.querySelector('.ytp-time-duration')?.textContent ||
-                           document.querySelector('meta[property="video:duration"]')?.content ||
-                           'Unknown';
-                           
-            const views = document.querySelector('#info-strings yt-formatted-string')?.textContent ||
-                         'Unknown';
-                         
-            return { 
-                title: title.trim(), 
-                duration, 
-                views: views.trim(),
-                extractedAt: new Date().toISOString()
-            };
-        });
-
-        console.log(`✅ Video info extracted: ${videoInfo.title}`);
-        
-        // Keep session for potential reuse, auto-cleanup after 5 minutes
-        setTimeout(() => {
-            browser.close().catch(() => {});
-            sessions.delete(sessionId);
-        }, 300000);
-        
-        return videoInfo;
-        
-    } catch (error) {
-        console.error('❌ Browser extraction failed:', error.message);
-        throw new Error(`Browser extraction failed: ${error.message}`);
-    }
-}
-
-// Enhanced yt-dlp download with maximum stealth
+// Enhanced yt-dlp download with fixed command building
 async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     const userAgent = getRandomUserAgent();
     const proxy = getRandomProxy();
@@ -306,41 +135,38 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     
     console.log(`⬇️ Starting yt-dlp download: ${jobId.slice(0, 8)}...`);
     
-    const baseArgs = [
-        '--no-warnings',
-        '--no-cache-dir',
-        '--user-agent', `"${userAgent}"`,
-        '--referer', 'https://www.youtube.com/',
-        '--add-header', `Accept-Language:${getRandomLanguage()}`,
-        '--add-header', 'Accept-Encoding:gzip, deflate, br',
-        '--add-header', 'Connection:keep-alive',
-        '--cookies-from-browser', 'chrome',
-        '--sleep-interval', '5',
-        '--max-sleep-interval', '15',
-        '--retries', '3',
-        '--fragment-retries', '3',
-        '--retry-sleep', 'exp=1:5',
-        '-o', `"${outputTemplate}"`
-    ];
-
-    if (proxy) {
-        baseArgs.push('--proxy', proxy);
-    }
-
     const results = {};
     
     // Download video format
     if (formats.includes('video')) {
         console.log('📹 Downloading video...');
         try {
-            const videoArgs = [...baseArgs, 
+            // Build arguments array properly to avoid shell escaping issues
+            const videoArgs = [
+                '--no-warnings',
+                '--no-cache-dir',
+                '--user-agent', userAgent,
+                '--referer', 'https://www.youtube.com/',
+                '--add-header', `Accept-Language:${getRandomLanguage()}`,
+                '--add-header', 'Accept-Encoding:gzip, deflate, br',
+                '--add-header', 'Connection:keep-alive',
+                '--sleep-interval', '5',
+                '--max-sleep-interval', '15',
+                '--retries', '3',
+                '--fragment-retries', '3',
+                '--retry-sleep', 'exp=1:5',
+                '-o', outputTemplate,
                 '-f', 'best[ext=mp4][height<=1080]/best[ext=mp4]/best',
-                '--embed-subs',
-                `"${url}"`
+                '--embed-subs'
             ];
+
+            if (proxy) {
+                videoArgs.push('--proxy', proxy);
+            }
+
+            videoArgs.push(url);
             
-            const videoCmd = `yt-dlp ${videoArgs.join(' ')}`;
-            await execPromise(videoCmd);
+            await execYtDlp(videoArgs);
             
             const videoFiles = await fs.readdir(CONFIG.downloadDir);
             const videoFile = videoFiles.find(f => f.startsWith(`${jobId}_`) && f.includes('.mp4'));
@@ -359,16 +185,33 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     if (formats.includes('audio')) {
         console.log('🎵 Extracting audio...');
         try {
-            const audioArgs = [...baseArgs, 
+            const audioArgs = [
+                '--no-warnings',
+                '--no-cache-dir',
+                '--user-agent', userAgent,
+                '--referer', 'https://www.youtube.com/',
+                '--add-header', `Accept-Language:${getRandomLanguage()}`,
+                '--add-header', 'Accept-Encoding:gzip, deflate, br',
+                '--add-header', 'Connection:keep-alive',
+                '--sleep-interval', '5',
+                '--max-sleep-interval', '15',
+                '--retries', '3',
+                '--fragment-retries', '3',
+                '--retry-sleep', 'exp=1:5',
+                '-o', outputTemplate,
                 '-f', 'bestaudio[ext=m4a]/bestaudio',
                 '--extract-audio',
                 '--audio-format', 'mp3',
-                '--audio-quality', '192K',
-                `"${url}"`
+                '--audio-quality', '192K'
             ];
+
+            if (proxy) {
+                audioArgs.push('--proxy', proxy);
+            }
+
+            audioArgs.push(url);
             
-            const audioCmd = `yt-dlp ${audioArgs.join(' ')}`;
-            await execPromise(audioCmd);
+            await execYtDlp(audioArgs);
             
             const audioFiles = await fs.readdir(CONFIG.downloadDir);
             const audioFile = audioFiles.find(f => f.startsWith(`${jobId}_`) && (f.includes('.mp3') || f.includes('.m4a')));
@@ -390,8 +233,13 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
             const originalVideoPath = path.join(CONFIG.downloadDir, results.video.replace('/files/', ''));
             const silentVideoPath = path.join(CONFIG.downloadDir, `${jobId}_silent.mp4`);
             
-            const ffmpegCmd = `ffmpeg -i "${originalVideoPath}" -an -c:v copy -avoid_negative_ts make_zero "${silentVideoPath}"`;
-            await execPromise(ffmpegCmd);
+            await execFfmpeg([
+                '-i', originalVideoPath,
+                '-an',
+                '-c:v', 'copy',
+                '-avoid_negative_ts', 'make_zero',
+                silentVideoPath
+            ]);
             
             results.silent_video = `/files/${jobId}_silent.mp4`;
             console.log(`✅ Silent video created`);
@@ -403,30 +251,85 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     return results;
 }
 
-// Execute command with enhanced error handling
-function execPromise(command) {
+// Execute yt-dlp with proper process spawning
+function execYtDlp(args) {
     return new Promise((resolve, reject) => {
-        const maskedCommand = command.replace(/http:\/\/[^:]+:[^@]+@/g, 'http://***:***@');
-        console.log(`🔧 Executing: ${maskedCommand.slice(0, 100)}...`);
+        console.log(`🔧 Executing yt-dlp with ${args.length} arguments`);
         
-        exec(command, { timeout: 300000 }, (error, stdout, stderr) => {
-            if (error) {
+        const process = spawn('yt-dlp', args, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 300000 // 5 minute timeout
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        process.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+
+        process.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        process.on('close', (code) => {
+            if (code === 0) {
+                resolve(stdout);
+            } else {
+                // Check for specific YouTube blocking patterns
                 if (stderr.includes('Sign in to confirm') || 
                     stderr.includes('bot') || 
-                    error.message.includes('429') ||
-                    error.message.includes('403')) {
-                    reject(new Error(`YouTube bot detection triggered: ${error.message}`));
+                    stderr.includes('429') ||
+                    stderr.includes('403')) {
+                    reject(new Error(`YouTube bot detection triggered: ${stderr}`));
                 } else {
-                    reject(new Error(`Command failed: ${error.message}`));
+                    reject(new Error(`yt-dlp failed with code ${code}: ${stderr}`));
                 }
-            } else {
-                resolve(stdout);
             }
+        });
+
+        process.on('error', (error) => {
+            reject(new Error(`Failed to start yt-dlp: ${error.message}`));
         });
     });
 }
 
-// Process download job
+// Execute ffmpeg with proper process spawning
+function execFfmpeg(args) {
+    return new Promise((resolve, reject) => {
+        console.log(`🔧 Executing ffmpeg with ${args.length} arguments`);
+        
+        const process = spawn('ffmpeg', args, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: 180000 // 3 minute timeout
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        process.stdout.on('data', (data) => {
+            stdout += data.toString();
+        });
+
+        process.stderr.on('data', (data) => {
+            stderr += data.toString();
+        });
+
+        process.on('close', (code) => {
+            if (code === 0) {
+                resolve(stdout);
+            } else {
+                reject(new Error(`ffmpeg failed with code ${code}: ${stderr}`));
+            }
+        });
+
+        process.on('error', (error) => {
+            reject(new Error(`Failed to start ffmpeg: ${error.message}`));
+        });
+    });
+}
+
+// Process download job (simplified without browser automation for Railway)
 async function processDownloadJob(jobId) {
     const job = jobs.get(jobId);
     if (!job) return;
@@ -456,24 +359,13 @@ async function processDownloadJob(jobId) {
         console.log(`⏳ Stealth delay: ${Math.round(stealthDelay/1000)}s`);
         await delay(stealthDelay);
 
-        // Extract video info
-        try {
-            const videoInfo = await getVideoInfoWithBrowser(job.url, sessionId);
-            job.videoInfo = videoInfo;
-            job.progress = 40;
-        } catch (error) {
-            console.warn('⚠️ Video info extraction failed, continuing:', error.message);
-            job.progress = 40;
-        }
-
-        await delay(3000 + Math.random() * 7000);
-
-        // Download files
         job.progress = 50;
+
+        // Download files using yt-dlp directly (skip browser for Railway compatibility)
         const downloadResults = await downloadWithYtDlp(job.url, jobId, job.formats, sessionId);
         
         if (Object.keys(downloadResults).length === 0) {
-            throw new Error('No files downloaded - possible bot detection');
+            throw new Error('No files downloaded - possible bot detection or video unavailable');
         }
         
         job.files = downloadResults;
@@ -502,15 +394,6 @@ async function processDownloadJob(jobId) {
         }
     } finally {
         activeDownloads.delete(jobId);
-        
-        // Cleanup session
-        const session = sessions.get(sessionId);
-        if (session) {
-            try {
-                await session.browser.close();
-            } catch (e) {}
-            sessions.delete(sessionId);
-        }
     }
 }
 
@@ -813,17 +696,6 @@ async function startServer() {
 // Graceful shutdown
 async function gracefulShutdown(signal) {
     console.log(`\n${signal} received. Shutting down gracefully...`);
-    
-    // Close all browser sessions
-    for (const [sessionId, session] of sessions) {
-        try {
-            await session.browser.close();
-            console.log(`🔒 Closed session: ${sessionId.slice(0, 8)}...`);
-        } catch (e) {
-            console.error(`❌ Error closing session ${sessionId.slice(0, 8)}...:`, e.message);
-        }
-    }
-    
     console.log('✅ Graceful shutdown complete');
     process.exit(0);
 }
