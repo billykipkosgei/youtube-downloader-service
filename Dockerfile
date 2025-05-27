@@ -1,17 +1,13 @@
-# Use Ubuntu for better compatibility
-FROM ubuntu:22.04
-
-# Avoid interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
+# Use Node.js directly instead of Ubuntu
+FROM node:18-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    curl \
     wget \
     python3 \
     python3-pip \
     ffmpeg \
-    chromium-browser \
+    chromium \
     fonts-liberation \
     libnss3 \
     libatk-bridge2.0-0 \
@@ -24,10 +20,6 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 18.x
-RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
-    && apt-get install -y nodejs
-
 # Install yt-dlp
 RUN pip3 install --upgrade yt-dlp
 
@@ -39,11 +31,15 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser \
     && mkdir -p downloads temp logs \
     && chown -R appuser:appuser /app
 
-# Copy package files
+# Copy package files first (for better layer caching)
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Set Puppeteer to use system Chromium before npm install
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
+# Install dependencies with npm install instead of npm ci for better performance
+RUN npm install --omit=dev
 
 # Copy application code
 COPY server.js ./
@@ -55,16 +51,12 @@ RUN chown -R appuser:appuser /app
 # Switch to non-root user
 USER appuser
 
-# Set Puppeteer to use system Chromium
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-
 # Expose port
 EXPOSE 3000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:3000/health || exit 1
+    CMD wget -q -O - http://localhost:3000/health || exit 1
 
 # Start application
 CMD ["npm", "start"]
