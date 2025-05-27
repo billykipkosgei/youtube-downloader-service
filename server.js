@@ -134,7 +134,8 @@ function validateYouTubeUrl(url) {
     return patterns.some(pattern => pattern.test(url));
 }
 
-// Enhanced yt-dlp download with better error handling and updated arguments
+// Replace the downloadWithYtDlp function in your server.js with this updated version:
+
 async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     const userAgent = getRandomUserAgent();
     const proxy = getRandomProxy();
@@ -144,7 +145,7 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     
     const results = {};
     
-    // Base arguments for all downloads - updated for better compatibility
+    // Enhanced base arguments to work around YouTube extraction issues
     const getBaseArgs = () => {
         const baseArgs = [
             '--no-warnings',
@@ -152,13 +153,16 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
             '--user-agent', userAgent,
             '--referer', 'https://www.youtube.com/',
             '--add-header', `Accept-Language:${getRandomLanguage()}`,
-            '--sleep-interval', '3',
-            '--max-sleep-interval', '8',
-            '--retries', '5', // Increased retries
-            '--fragment-retries', '5',
-            '--retry-sleep', 'exp=1:3',
-            '--ignore-errors', // Continue on errors
-            '--no-check-certificate', // Skip SSL checks
+            '--extractor-args', 'youtube:player_client=android,web',  // NEW: Multiple client support
+            '--extractor-args', 'youtube:skip=hls,dash',              // NEW: Skip problematic formats
+            '--sleep-interval', '2',
+            '--max-sleep-interval', '5',
+            '--retries', '3',
+            '--fragment-retries', '3',
+            '--retry-sleep', 'linear=1:5',
+            '--ignore-errors',
+            '--no-check-certificate',
+            '--cookies-from-browser', 'chrome:~/.config/chromium',    // NEW: Use browser cookies
             '-o', outputTemplate
         ];
 
@@ -171,13 +175,15 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
         return baseArgs;
     };
     
-    // Download video format
+    // Download video format with multiple fallback strategies
     if (formats.includes('video')) {
         console.log('📹 Downloading video...');
+        
+        // Strategy 1: Best quality with Android client
         try {
             const videoArgs = [
                 ...getBaseArgs(),
-                '-f', 'best[height<=1080]/best', // Simplified format selector
+                '-f', 'best[height<=720]/best',  // Lower quality for better success
                 url
             ];
             
@@ -193,43 +199,81 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
                 console.log(`✅ Video downloaded: ${videoFile}`);
             }
         } catch (error) {
-            console.error('❌ Video download failed:', error.message);
+            console.error('❌ Strategy 1 failed:', error.message);
             
-            // Try alternative approach with simpler format
+            // Strategy 2: Use web client with simplified format
             try {
-                console.log('🔄 Retrying with alternative format...');
-                const altVideoArgs = [
-                    ...getBaseArgs(),
-                    '-f', 'mp4', // Even simpler
-                    url
+                console.log('🔄 Trying web client...');
+                const webArgs = [
+                    '--no-warnings',
+                    '--no-cache-dir',
+                    '--user-agent', userAgent,
+                    '--extractor-args', 'youtube:player_client=web',
+                    '--sleep-interval', '1',
+                    '--retries', '2',
+                    '-f', 'mp4/best',
+                    '-o', outputTemplate
                 ];
                 
-                await execYtDlp(altVideoArgs);
+                if (proxy) {
+                    webArgs.push('--proxy', proxy);
+                }
+                webArgs.push(url);
+                
+                await execYtDlp(webArgs);
                 
                 const videoFiles = await fs.readdir(CONFIG.downloadDir);
                 const videoFile = videoFiles.find(f => f.startsWith(`${jobId}_`) && f.includes('.mp4'));
                 if (videoFile) {
                     results.video = `/files/${videoFile}`;
-                    console.log(`✅ Video downloaded (retry): ${videoFile}`);
+                    console.log(`✅ Video downloaded (web client): ${videoFile}`);
                 }
-            } catch (retryError) {
-                console.error('❌ Video retry also failed:', retryError.message);
+            } catch (webError) {
+                console.error('❌ Web client also failed:', webError.message);
+                
+                // Strategy 3: Use youtube-dl as fallback
+                try {
+                    console.log('🔄 Trying youtube-dl fallback...');
+                    const fallbackArgs = [
+                        '--no-warnings',
+                        '--user-agent', userAgent,
+                        '-f', 'mp4',
+                        '-o', outputTemplate.replace('yt-dlp', 'youtube-dl')
+                    ];
+                    
+                    if (proxy) {
+                        fallbackArgs.push('--proxy', proxy);
+                    }
+                    fallbackArgs.push(url);
+                    
+                    await execYoutubeDl(fallbackArgs);
+                    
+                    const videoFiles = await fs.readdir(CONFIG.downloadDir);
+                    const videoFile = videoFiles.find(f => f.startsWith(`${jobId}_`) && f.includes('.mp4'));
+                    if (videoFile) {
+                        results.video = `/files/${videoFile}`;
+                        console.log(`✅ Video downloaded (youtube-dl): ${videoFile}`);
+                    }
+                } catch (fallbackError) {
+                    console.error('❌ All video strategies failed:', fallbackError.message);
+                }
             }
         }
         
-        await delay(CONFIG.requestDelay + Math.random() * 5000);
+        await delay(CONFIG.requestDelay + Math.random() * 3000);
     }
 
-    // Download audio format
+    // Download audio format with enhanced strategies
     if (formats.includes('audio')) {
         console.log('🎵 Extracting audio...');
+        
         try {
             const audioArgs = [
                 ...getBaseArgs(),
-                '-f', 'bestaudio/best',
+                '-f', 'bestaudio[ext=m4a]/bestaudio',
                 '--extract-audio',
                 '--audio-format', 'mp3',
-                '--audio-quality', '192K',
+                '--audio-quality', '128K',  // Lower quality for better success
                 url
             ];
             
@@ -247,42 +291,32 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
         } catch (error) {
             console.error('❌ Audio extraction failed:', error.message);
             
-            // Try downloading video and extracting audio with ffmpeg
+            // Fallback: Try to extract audio from any downloaded video
             try {
-                console.log('🔄 Trying audio extraction from video...');
-                const videoOnlyArgs = [
-                    ...getBaseArgs(),
-                    '-f', 'best',
-                    '--output', path.join(CONFIG.downloadDir, `${jobId}_temp_video.%(ext)s`),
-                    url
-                ];
+                console.log('🔄 Extracting audio from video...');
+                const videoFiles = await fs.readdir(CONFIG.downloadDir);
+                const anyVideo = videoFiles.find(f => 
+                    f.startsWith(`${jobId}_`) && 
+                    (f.includes('.mp4') || f.includes('.webm') || f.includes('.mkv'))
+                );
                 
-                await execYtDlp(videoOnlyArgs);
-                
-                // Find the downloaded video
-                const tempFiles = await fs.readdir(CONFIG.downloadDir);
-                const tempVideo = tempFiles.find(f => f.startsWith(`${jobId}_temp_video`));
-                
-                if (tempVideo) {
+                if (anyVideo) {
                     const audioOutput = path.join(CONFIG.downloadDir, `${jobId}_audio.mp3`);
                     await execFfmpeg([
-                        '-i', path.join(CONFIG.downloadDir, tempVideo),
-                        '-vn', '-acodec', 'mp3', '-ab', '192k',
+                        '-i', path.join(CONFIG.downloadDir, anyVideo),
+                        '-vn', '-acodec', 'mp3', '-ab', '128k',
                         audioOutput
                     ]);
-                    
-                    // Clean up temp video
-                    await fs.unlink(path.join(CONFIG.downloadDir, tempVideo));
                     
                     results.audio = `/files/${jobId}_audio.mp3`;
                     console.log(`✅ Audio extracted via ffmpeg: ${jobId}_audio.mp3`);
                 }
-            } catch (altError) {
-                console.error('❌ Alternative audio extraction failed:', altError.message);
+            } catch (ffmpegError) {
+                console.error('❌ Audio extraction via ffmpeg failed:', ffmpegError.message);
             }
         }
         
-        await delay(CONFIG.requestDelay + Math.random() * 5000);
+        await delay(CONFIG.requestDelay + Math.random() * 3000);
     }
 
     // Create silent video
@@ -294,8 +328,8 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
             
             await execFfmpeg([
                 '-i', originalVideoPath,
-                '-an', // Remove audio
-                '-c:v', 'copy', // Copy video without re-encoding
+                '-an',
+                '-c:v', 'copy',
                 '-avoid_negative_ts', 'make_zero',
                 silentVideoPath
             ]);
@@ -310,18 +344,17 @@ async function downloadWithYtDlp(url, jobId, formats, sessionId) {
     return results;
 }
 
-// Execute yt-dlp with proper process spawning and enhanced error handling
-function execYtDlp(args) {
+// Add youtube-dl fallback function
+function execYoutubeDl(args) {
     return new Promise((resolve, reject) => {
-        console.log(`🔧 Executing yt-dlp with ${args.length} arguments`);
+        console.log(`🔧 Executing youtube-dl with ${args.length} arguments`);
         
-        // FIXED: Use childProcess instead of process to avoid naming conflict
-        const childProcess = spawn('yt-dlp', args, {
+        const childProcess = spawn('youtube-dl', args, {
             stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: 300000, // 5 minute timeout
+            timeout: 300000,
             env: {
                 ...process.env,
-                PYTHONUNBUFFERED: '1' // Better output handling
+                PYTHONUNBUFFERED: '1'
             }
         });
 
@@ -340,29 +373,12 @@ function execYtDlp(args) {
             if (code === 0) {
                 resolve(stdout);
             } else {
-                // Enhanced error detection
-                const errorMessage = stderr + stdout;
-                
-                if (errorMessage.includes('Sign in to confirm') || 
-                    errorMessage.includes('bot') || 
-                    errorMessage.includes('429') ||
-                    errorMessage.includes('403') ||
-                    errorMessage.includes('captcha')) {
-                    reject(new Error(`YouTube bot detection triggered: ${errorMessage.slice(0, 200)}`));
-                } else if (errorMessage.includes('Video unavailable') ||
-                          errorMessage.includes('Private video') ||
-                          errorMessage.includes('does not exist')) {
-                    reject(new Error(`Video not accessible: ${errorMessage.slice(0, 200)}`));
-                } else if (errorMessage.includes('Failed to extract')) {
-                    reject(new Error(`YouTube extraction failed - this is often temporary. Error: ${errorMessage.slice(0, 200)}`));
-                } else {
-                    reject(new Error(`yt-dlp failed with code ${code}: ${errorMessage.slice(0, 200)}`));
-                }
+                reject(new Error(`youtube-dl failed with code ${code}: ${stderr.slice(0, 200)}`));
             }
         });
 
         childProcess.on('error', (error) => {
-            reject(new Error(`Failed to start yt-dlp: ${error.message}`));
+            reject(new Error(`Failed to start youtube-dl: ${error.message}`));
         });
     });
 }
